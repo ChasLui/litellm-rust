@@ -45,6 +45,10 @@ pub struct LiteLlmParams {
     pub model: String,
     pub api_key: Option<String>,
     pub api_base: Option<String>,
+    /// Override the provider's default wire format: `chat` | `responses` |
+    /// `gemini` | `anthropic`. When absent, the provider id's default is used.
+    #[serde(default)]
+    pub wire_api: Option<String>,
 
     #[serde(flatten)]
     pub extra: HashMap<String, serde_yaml::Value>,

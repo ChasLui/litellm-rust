@@ -10,7 +10,7 @@ use crate::{
     sdk::codec::WireFormat,
 };
 
-pub async fn messages(
+pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: Bytes,
@@ -27,7 +27,7 @@ pub async fn messages(
 
     pipeline::handle(
         &state,
-        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
         model,
         stream,
         body,
