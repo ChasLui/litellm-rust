@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use litellm_rust::proxy::config::{load_config, McpAuthType, McpTransport};
+use litellm_rust::proxy::config::{load_config, CacheBackendKind, McpAuthType, McpTransport};
 use tempfile::NamedTempFile;
 
 fn write_config(contents: &str) -> NamedTempFile {
@@ -217,6 +217,41 @@ mcp_servers:
 "#,
     );
     assert!(load_config(file.path()).is_err());
+}
+
+/// Golden compatibility test: an existing upstream litellm cache stanza
+/// (`litellm_settings.cache` + `cache_params`) is honoured on a drop-in config,
+/// translated onto the native `general_settings.cache` (type→backend, ttl, dir).
+/// Without the shim the whole block is silently dropped and caching stays off.
+#[test]
+fn honours_upstream_litellm_settings_cache_block() {
+    let file = write_config(
+        r#"
+model_list:
+  - model_name: claude
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: sk-ant-test
+litellm_settings:
+  cache: true
+  cache_params:
+    type: disk
+    disk_cache_dir: /tmp/litellm-rust-cache
+    ttl: 120
+"#,
+    );
+    let config = load_config(file.path()).unwrap();
+    let cache = &config.general_settings.cache;
+    assert!(
+        cache.enabled,
+        "upstream litellm_settings.cache: true should enable caching"
+    );
+    assert_eq!(cache.backend, CacheBackendKind::Redb);
+    assert_eq!(
+        cache.redb_path.as_deref(),
+        Some("/tmp/litellm-rust-cache/litellm-cache.redb")
+    );
+    assert_eq!(cache.ttl_secs, 120);
 }
 
 #[test]

@@ -9,9 +9,9 @@ use crate::{
     sdk::{
         codec::{
             ir::{
-                BlockStart, ChatRequest, ChatResponse, ContentBlock, ImageSource, Message,
-                ReasoningConfig, ResponseFormat, Role, StopReason, StreamEvent, ToolChoice,
-                ToolDef, Usage,
+                BlockStart, CacheMarkers, ChatRequest, ChatResponse, ContentBlock, ImageSource,
+                Message, ReasoningConfig, ResponseFormat, Role, StopReason, StreamEvent,
+                ToolChoice, ToolDef, Usage,
             },
             stream::{sse_frame, SseEvent, StreamParser, StreamRenderer},
             ProtocolCodec, RequestCtx,
@@ -50,7 +50,10 @@ impl ProtocolCodec for AnthropicCodec {
         };
 
         let model = take_string(&mut obj, "model").unwrap_or_default();
-        let system = match obj.remove("system") {
+        let system_raw = obj.remove("system");
+        let system_cached =
+            matches!(&system_raw, Some(Value::Array(arr)) if array_has_cache_control(arr));
+        let system = match system_raw {
             Some(Value::String(s)) => vec![ContentBlock::Text { text: s }],
             Some(Value::Array(arr)) => arr
                 .iter()
@@ -59,12 +62,27 @@ impl ProtocolCodec for AnthropicCodec {
             _ => Vec::new(),
         };
 
+        let mut message_cache_idx = Vec::new();
         let messages = match obj.remove("messages") {
-            Some(Value::Array(arr)) => arr.iter().filter_map(message_from_anthropic).collect(),
+            Some(Value::Array(arr)) => {
+                let mut out = Vec::new();
+                for raw in &arr {
+                    if let Some(msg) = message_from_anthropic(raw) {
+                        if message_has_cache_control(raw) {
+                            message_cache_idx.push(out.len());
+                        }
+                        out.push(msg);
+                    }
+                }
+                out
+            }
             _ => Vec::new(),
         };
 
-        let tools = match obj.remove("tools") {
+        let tools_raw = obj.remove("tools");
+        let tools_cached =
+            matches!(&tools_raw, Some(Value::Array(arr)) if array_has_cache_control(arr));
+        let tools = match tools_raw {
             Some(Value::Array(arr)) => arr.iter().filter_map(tool_from_anthropic).collect(),
             _ => Vec::new(),
         };
@@ -119,6 +137,11 @@ impl ProtocolCodec for AnthropicCodec {
             system,
             messages,
             tools,
+            cache: CacheMarkers {
+                tools: tools_cached,
+                system: system_cached,
+                messages: message_cache_idx,
+            },
             tool_choice,
             parallel_tool_calls,
             response_format,
@@ -144,24 +167,32 @@ impl ProtocolCodec for AnthropicCodec {
             json!(req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS)),
         );
         if !req.system.is_empty() {
-            obj.insert(
-                "system".to_owned(),
-                Value::Array(req.system.iter().map(block_to_anthropic).collect()),
-            );
+            let mut system: Vec<Value> = req.system.iter().map(block_to_anthropic).collect();
+            if req.cache.system {
+                if let Some(last) = system.last_mut() {
+                    set_cache_control(last);
+                }
+            }
+            obj.insert("system".to_owned(), Value::Array(system));
         }
         obj.insert(
             "messages".to_owned(),
-            Value::Array(render_messages(&req.messages)),
+            Value::Array(render_messages(&req.messages, &req.cache.messages)),
         );
         // Built-in/server tools are origin-specific; drop them rather than
         // render a bogus function tool the other side can't satisfy.
-        let function_tools: Vec<Value> = req
+        let mut function_tools: Vec<Value> = req
             .tools
             .iter()
             .filter(|t| t.builtin.is_none())
             .map(tool_to_anthropic)
             .collect();
         if !function_tools.is_empty() {
+            if req.cache.tools {
+                if let Some(last) = function_tools.last_mut() {
+                    set_cache_control(last);
+                }
+            }
             obj.insert("tools".to_owned(), Value::Array(function_tools));
         }
         if let Some(tc) = &req.tool_choice {
@@ -260,14 +291,17 @@ impl ProtocolCodec for AnthropicCodec {
             "stop_reason": resp.stop_reason.as_ref().map(StopReason::to_anthropic),
             "stop_sequence": Value::Null,
             "usage": {
-                "input_tokens": resp.usage.input_tokens,
+                // Anthropic reports `input_tokens` as the post-breakpoint remainder.
+                "input_tokens": resp.usage.non_cached_input_tokens(),
                 "output_tokens": resp.usage.output_tokens,
+                "cache_creation_input_tokens": resp.usage.cache_creation_input_tokens,
+                "cache_read_input_tokens": resp.usage.cache_read_input_tokens,
             },
         }))
     }
 
     fn stream_parser(&self) -> Box<dyn StreamParser> {
-        Box::new(AnthropicStreamParser)
+        Box::new(AnthropicStreamParser::default())
     }
 
     fn stream_renderer(&self, ctx: &RequestCtx) -> Box<dyn StreamRenderer> {
@@ -458,9 +492,9 @@ fn message_from_anthropic(v: &Value) -> Option<Message> {
 /// span several messages (e.g. parallel tool results arrive as separate
 /// `Role::Tool` messages that all map to the "user" wire role). Empty-content
 /// messages are dropped, since Anthropic rejects an empty `content` array.
-fn render_messages(messages: &[Message]) -> Vec<Value> {
+fn render_messages(messages: &[Message], cache_idx: &[usize]) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
-    for msg in messages {
+    for (i, msg) in messages.iter().enumerate() {
         let role = msg.role.as_anthropic();
         let blocks: Vec<Value> = msg.content.iter().map(block_to_anthropic).collect();
         if blocks.is_empty() {
@@ -473,6 +507,15 @@ fn render_messages(messages: &[Message]) -> Vec<Value> {
                 }
             }
             _ => out.push(json!({"role": role, "content": Value::Array(blocks)})),
+        }
+        // A cache breakpoint on this message lands on the last block we just
+        // appended (its tail, even after coalescing into the previous turn).
+        if cache_idx.contains(&i) {
+            if let Some(Value::Array(arr)) = out.last_mut().and_then(|m| m.get_mut("content")) {
+                if let Some(last_block) = arr.last_mut() {
+                    set_cache_control(last_block);
+                }
+            }
         }
     }
     out
@@ -551,13 +594,42 @@ fn usage_from_anthropic(v: Option<&Value>) -> Usage {
     let Some(obj) = v.and_then(Value::as_object) else {
         return Usage::default();
     };
+    let u = |key: &str| obj.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let cache_read = u("cache_read_input_tokens");
+    let cache_creation = u("cache_creation_input_tokens");
     Usage {
-        input_tokens: obj.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
-        output_tokens: obj
-            .get("output_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
+        // Anthropic's `input_tokens` excludes the cached/created portions; add
+        // them back so the IR field is the inclusive total (see `Usage` docs).
+        input_tokens: u("input_tokens") + cache_read + cache_creation,
+        output_tokens: u("output_tokens"),
+        cache_creation_input_tokens: cache_creation,
+        cache_read_input_tokens: cache_read,
     }
+}
+
+// ---- prompt-cache helpers -------------------------------------------------
+
+/// Add a 5-minute `ephemeral` cache breakpoint to a rendered content block.
+fn set_cache_control(block: &mut Value) {
+    if let Some(o) = block.as_object_mut() {
+        o.insert("cache_control".to_owned(), json!({"type": "ephemeral"}));
+    }
+}
+
+/// Whether any element of a raw block/tool array carries a `cache_control` key.
+fn array_has_cache_control(arr: &[Value]) -> bool {
+    arr.iter().any(|b| b.get("cache_control").is_some())
+}
+
+/// Whether a raw message has a cache breakpoint, either at the message level or
+/// on any of its content blocks.
+fn message_has_cache_control(msg: &Value) -> bool {
+    if msg.get("cache_control").is_some() {
+        return true;
+    }
+    msg.get("content")
+        .and_then(Value::as_array)
+        .is_some_and(|arr| array_has_cache_control(arr))
 }
 
 // ---- shared small helpers -------------------------------------------------
@@ -578,7 +650,12 @@ pub(crate) fn strip_known(mut obj: Map<String, Value>, known: &[&str]) -> Map<St
 
 // ---- streaming ------------------------------------------------------------
 
-struct AnthropicStreamParser;
+#[derive(Default)]
+struct AnthropicStreamParser {
+    /// Usage from `message_start` (Anthropic reports cache tokens there). Folded
+    /// into the final `message_delta` so downstream renderers see complete usage.
+    start_usage: Usage,
+}
 
 impl StreamParser for AnthropicStreamParser {
     fn push(&mut self, event: &SseEvent) -> Result<Vec<StreamEvent>, GatewayError> {
@@ -591,6 +668,7 @@ impl StreamParser for AnthropicStreamParser {
         Ok(match kind {
             "message_start" => {
                 let msg = data.get("message");
+                self.start_usage = usage_from_anthropic(msg.and_then(|m| m.get("usage")));
                 vec![StreamEvent::MessageStart {
                     id: msg
                         .and_then(|m| m.get("id"))
@@ -666,7 +744,15 @@ impl StreamParser for AnthropicStreamParser {
                     .and_then(|d| d.get("stop_reason"))
                     .and_then(Value::as_str)
                     .map(StopReason::from_anthropic);
-                let usage = data.get("usage").map(|u| usage_from_anthropic(Some(u)));
+                // The delta carries output_tokens; fold in input + cache tokens
+                // captured from message_start so the emitted usage is complete.
+                let usage = data.get("usage").map(|u| {
+                    let mut u = usage_from_anthropic(Some(u));
+                    u.input_tokens = u.input_tokens.max(self.start_usage.input_tokens);
+                    u.cache_read_input_tokens = self.start_usage.cache_read_input_tokens;
+                    u.cache_creation_input_tokens = self.start_usage.cache_creation_input_tokens;
+                    u
+                });
                 vec![StreamEvent::MessageDelta { stop_reason, usage }]
             }
             "message_stop" => vec![StreamEvent::MessageStop],
@@ -745,10 +831,23 @@ impl StreamRenderer for AnthropicStreamRenderer {
                 sse_frame(Some("content_block_stop"), &data.to_string())
             }
             StreamEvent::MessageDelta { stop_reason, usage } => {
+                let mut usage_obj =
+                    json!({"output_tokens": usage.as_ref().map(|u| u.output_tokens).unwrap_or(0)});
+                // Surface cache tokens when present (e.g. a non-Anthropic upstream
+                // reported them at end-of-stream). Omitted when zero so the common
+                // case stays byte-identical.
+                if let Some(u) = usage {
+                    if u.cache_read_input_tokens > 0 || u.cache_creation_input_tokens > 0 {
+                        usage_obj["input_tokens"] = json!(u.non_cached_input_tokens());
+                        usage_obj["cache_read_input_tokens"] = json!(u.cache_read_input_tokens);
+                        usage_obj["cache_creation_input_tokens"] =
+                            json!(u.cache_creation_input_tokens);
+                    }
+                }
                 let data = json!({
                     "type": "message_delta",
                     "delta": {"stop_reason": stop_reason.as_ref().map(StopReason::to_anthropic)},
-                    "usage": {"output_tokens": usage.as_ref().map(|u| u.output_tokens).unwrap_or(0)},
+                    "usage": usage_obj,
                 });
                 sse_frame(Some("message_delta"), &data.to_string())
             }
@@ -757,5 +856,115 @@ impl StreamRenderer for AnthropicStreamRenderer {
                 &json!({"type": "message_stop"}).to_string(),
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn parses_and_renders_cache_control_breakpoints() {
+        let body = json!({
+            "model": "claude",
+            "system": [
+                {"type": "text", "text": "you are helpful"},
+                {"type": "text", "text": "rules", "cache_control": {"type": "ephemeral"}}
+            ],
+            "tools": [
+                {"name": "a", "input_schema": {"type": "object"}},
+                {"name": "b", "input_schema": {"type": "object"},
+                 "cache_control": {"type": "ephemeral"}}
+            ],
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}
+                ]}
+            ],
+            "max_tokens": 100
+        });
+        let req = AnthropicCodec.parse_request(body).unwrap();
+        assert!(req.cache.tools);
+        assert!(req.cache.system);
+        assert_eq!(req.cache.messages, vec![0]);
+
+        let out = AnthropicCodec.render_request(&req).unwrap();
+        let sys = out["system"].as_array().unwrap();
+        assert!(sys[0].get("cache_control").is_none());
+        assert!(sys[1].get("cache_control").is_some());
+        let tools = out["tools"].as_array().unwrap();
+        assert!(tools[0].get("cache_control").is_none());
+        assert!(tools[1].get("cache_control").is_some());
+        let content = out["messages"][0]["content"].as_array().unwrap();
+        assert!(content.last().unwrap().get("cache_control").is_some());
+    }
+
+    #[test]
+    fn no_breakpoints_when_client_sets_none() {
+        let body = json!({
+            "model": "claude",
+            "system": [{"type": "text", "text": "hi"}],
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 100
+        });
+        let req = AnthropicCodec.parse_request(body).unwrap();
+        assert!(req.cache.is_empty());
+        let out = AnthropicCodec.render_request(&req).unwrap();
+        assert!(out["system"][0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn stream_parser_folds_cache_usage_from_message_start() {
+        use crate::sdk::codec::stream::SseEvent;
+        let mut p = AnthropicStreamParser::default();
+        p.push(&SseEvent {
+            event: Some("message_start".to_owned()),
+            data: r#"{"type":"message_start","message":{"id":"m","model":"claude","usage":{"input_tokens":5,"cache_read_input_tokens":1000,"cache_creation_input_tokens":200,"output_tokens":0}}}"#.to_owned(),
+        })
+        .unwrap();
+        let evs = p
+            .push(&SseEvent {
+                event: Some("message_delta".to_owned()),
+                data: r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}"#.to_owned(),
+            })
+            .unwrap();
+        match &evs[0] {
+            StreamEvent::MessageDelta {
+                usage: Some(u), ..
+            } => {
+                assert_eq!(u.input_tokens, 1205);
+                assert_eq!(u.output_tokens, 42);
+                assert_eq!(u.cache_read_input_tokens, 1000);
+                assert_eq!(u.cache_creation_input_tokens, 200);
+            }
+            other => panic!("expected MessageDelta with usage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn usage_makes_input_inclusive_and_round_trips() {
+        let usage = usage_from_anthropic(Some(&json!({
+            "input_tokens": 50,
+            "output_tokens": 10,
+            "cache_creation_input_tokens": 200,
+            "cache_read_input_tokens": 1000
+        })));
+        assert_eq!(usage.input_tokens, 1250);
+        assert_eq!(usage.cache_read_input_tokens, 1000);
+        assert_eq!(usage.cache_creation_input_tokens, 200);
+        assert_eq!(usage.non_cached_input_tokens(), 50);
+
+        let resp = ChatResponse {
+            usage,
+            ..Default::default()
+        };
+        let ctx = RequestCtx {
+            model: "claude".to_owned(),
+            stream: false,
+        };
+        let out = AnthropicCodec.render_response(&resp, &ctx).unwrap();
+        assert_eq!(out["usage"]["input_tokens"], 50);
+        assert_eq!(out["usage"]["cache_read_input_tokens"], 1000);
+        assert_eq!(out["usage"]["cache_creation_input_tokens"], 200);
     }
 }

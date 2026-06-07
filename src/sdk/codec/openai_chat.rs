@@ -13,9 +13,9 @@ use crate::{
         codec::{
             anthropic::{strip_known, take_string},
             ir::{
-                BlockStart, ChatRequest, ChatResponse, ContentBlock, Effort, ImageSource, Message,
-                ReasoningConfig, ResponseFormat, Role, StopReason, StreamEvent, ToolChoice,
-                ToolDef, Usage,
+                BlockStart, CacheMarkers, ChatRequest, ChatResponse, ContentBlock, Effort,
+                ImageSource, Message, ReasoningConfig, ResponseFormat, Role, StopReason,
+                StreamEvent, ToolChoice, ToolDef, Usage,
             },
             stream::{sse_frame, SseEvent, StreamParser, StreamRenderer},
             ProtocolCodec, RequestCtx,
@@ -112,6 +112,8 @@ impl ProtocolCodec for OpenAiChatCodec {
             system,
             messages,
             tools,
+            // OpenAI prefix caching is automatic; nothing to carry from the wire.
+            cache: CacheMarkers::default(),
             tool_choice,
             parallel_tool_calls,
             response_format,
@@ -298,11 +300,7 @@ impl ProtocolCodec for OpenAiChatCodec {
                     .map(StopReason::to_openai)
                     .unwrap_or_else(|| "stop".to_owned()),
             }],
-            "usage": {
-                "prompt_tokens": resp.usage.input_tokens,
-                "completion_tokens": resp.usage.output_tokens,
-                "total_tokens": resp.usage.input_tokens + resp.usage.output_tokens,
-            },
+            "usage": openai_usage(&resp.usage),
         }))
     }
 
@@ -691,6 +689,12 @@ fn usage_from_openai(v: Option<&Value>) -> Usage {
     let Some(obj) = v.and_then(Value::as_object) else {
         return Usage::default();
     };
+    // OpenAI's `prompt_tokens` is already inclusive of cached tokens.
+    let cached = obj
+        .get("prompt_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     Usage {
         input_tokens: obj
             .get("prompt_tokens")
@@ -700,7 +704,23 @@ fn usage_from_openai(v: Option<&Value>) -> Usage {
             .get("completion_tokens")
             .and_then(Value::as_u64)
             .unwrap_or(0),
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: cached,
     }
+}
+
+/// Build an OpenAI Chat `usage` object, adding `prompt_tokens_details.cached_tokens`
+/// only when a cache hit occurred (keeps zero-cache output byte-identical).
+fn openai_usage(u: &Usage) -> Value {
+    let mut usage = json!({
+        "prompt_tokens": u.input_tokens,
+        "completion_tokens": u.output_tokens,
+        "total_tokens": u.input_tokens + u.output_tokens,
+    });
+    if u.cache_read_input_tokens > 0 {
+        usage["prompt_tokens_details"] = json!({"cached_tokens": u.cache_read_input_tokens});
+    }
+    usage
 }
 
 // ---- streaming ------------------------------------------------------------
@@ -986,11 +1006,7 @@ impl StreamRenderer for OpenAiChatStreamRenderer {
                         "created": 0,
                         "model": self.model,
                         "choices": [],
-                        "usage": {
-                            "prompt_tokens": u.input_tokens,
-                            "completion_tokens": u.output_tokens,
-                            "total_tokens": u.input_tokens + u.output_tokens,
-                        },
+                        "usage": openai_usage(u),
                     });
                     out.extend(sse_frame(None, &data.to_string()));
                 }

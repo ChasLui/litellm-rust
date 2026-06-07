@@ -159,6 +159,27 @@ impl Effort {
     }
 }
 
+/// Prompt-cache breakpoints for a request, kept out-of-band so the content-block
+/// types stay untouched. Anthropic breakpoints always sit at a prefix boundary
+/// (end of tools / end of system / the tail block of a message), so marking the
+/// carrier rather than an individual block covers real usage; a breakpoint in the
+/// middle of a message collapses to that message's last block on render.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CacheMarkers {
+    /// Breakpoint on the last tool definition (caches the whole `tools` prefix).
+    pub tools: bool,
+    /// Breakpoint on the last system block (caches `tools` + `system`).
+    pub system: bool,
+    /// Indices into `messages` whose tail block carries a breakpoint.
+    pub messages: Vec<usize>,
+}
+
+impl CacheMarkers {
+    pub fn is_empty(&self) -> bool {
+        !self.tools && !self.system && self.messages.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ChatRequest {
     pub model: String,
@@ -167,6 +188,9 @@ pub struct ChatRequest {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDef>,
     pub tool_choice: Option<ToolChoice>,
+    /// Prompt-cache breakpoints. Empty unless the client set `cache_control` or
+    /// the gateway auto-injected them. Only honoured when rendering to Anthropic.
+    pub cache: CacheMarkers,
     /// `Some(false)` forbids parallel tool calls; `None` leaves it unspecified.
     pub parallel_tool_calls: Option<bool>,
     pub response_format: Option<ResponseFormat>,
@@ -193,8 +217,27 @@ pub enum StopReason {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Usage {
+    /// TOTAL input tokens processed, INCLUDING `cache_read_input_tokens` and
+    /// `cache_creation_input_tokens`. OpenAI/Gemini already report inclusive
+    /// prompt counts; Anthropic reports only the post-breakpoint remainder, so
+    /// its codec adds the cache counts back to keep this field inclusive.
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Subset of `input_tokens` written to the prompt cache this turn (Anthropic,
+    /// billed ~1.25x). OpenAI/Gemini have no creation concept, so 0 there.
+    pub cache_creation_input_tokens: u64,
+    /// Subset of `input_tokens` served from the prompt cache (billed ~0.1x).
+    pub cache_read_input_tokens: u64,
+}
+
+impl Usage {
+    /// Input tokens billed at the full rate (total minus the cached/created
+    /// portions). Saturates so a malformed upstream count can't underflow.
+    pub fn non_cached_input_tokens(&self) -> u64 {
+        self.input_tokens
+            .saturating_sub(self.cache_read_input_tokens)
+            .saturating_sub(self.cache_creation_input_tokens)
+    }
 }
 
 #[derive(Debug, Clone, Default)]

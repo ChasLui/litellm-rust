@@ -15,7 +15,7 @@ use crate::{
         codec::{
             anthropic::{strip_known, take_string},
             ir::{
-                BlockStart, ChatRequest, ChatResponse, ContentBlock, Effort, Message,
+                BlockStart, CacheMarkers, ChatRequest, ChatResponse, ContentBlock, Effort, Message,
                 ReasoningConfig, ResponseFormat, Role, StopReason, StreamEvent, ToolChoice,
                 ToolDef, Usage,
             },
@@ -103,6 +103,8 @@ impl ProtocolCodec for OpenAiResponsesCodec {
             system,
             messages,
             tools,
+            // Responses prefix caching is automatic; nothing to carry from the wire.
+            cache: CacheMarkers::default(),
             tool_choice: obj.remove("tool_choice").and_then(parse_tool_choice),
             parallel_tool_calls,
             response_format,
@@ -292,11 +294,7 @@ impl ProtocolCodec for OpenAiResponsesCodec {
             "model": ctx.model,
             "status": status,
             "output": output,
-            "usage": {
-                "input_tokens": resp.usage.input_tokens,
-                "output_tokens": resp.usage.output_tokens,
-                "total_tokens": resp.usage.input_tokens + resp.usage.output_tokens,
-            },
+            "usage": responses_usage(&resp.usage),
         }))
     }
 
@@ -608,13 +606,35 @@ fn usage_from_responses(v: Option<&Value>) -> Usage {
     let Some(obj) = v.and_then(Value::as_object) else {
         return Usage::default();
     };
+    // Responses `input_tokens` is already inclusive of cached tokens.
+    let cached = obj
+        .get("input_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     Usage {
         input_tokens: obj.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
         output_tokens: obj
             .get("output_tokens")
             .and_then(Value::as_u64)
             .unwrap_or(0),
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: cached,
     }
+}
+
+/// Build a Responses `usage` object, adding `input_tokens_details.cached_tokens`
+/// only on a cache hit (keeps zero-cache output byte-identical).
+fn responses_usage(u: &Usage) -> Value {
+    let mut usage = json!({
+        "input_tokens": u.input_tokens,
+        "output_tokens": u.output_tokens,
+        "total_tokens": u.input_tokens + u.output_tokens,
+    });
+    if u.cache_read_input_tokens > 0 {
+        usage["input_tokens_details"] = json!({"cached_tokens": u.cache_read_input_tokens});
+    }
+    usage
 }
 
 // ---- streaming ------------------------------------------------------------
@@ -925,11 +945,7 @@ impl StreamRenderer for ResponsesStreamRenderer {
                             "object": "response",
                             "model": self.model,
                             "status": status,
-                            "usage": {
-                                "input_tokens": usage.input_tokens,
-                                "output_tokens": usage.output_tokens,
-                                "total_tokens": usage.input_tokens + usage.output_tokens,
-                            },
+                            "usage": responses_usage(&usage),
                         },
                     }),
                 )

@@ -100,9 +100,59 @@ Cross-protocol translation is best-effort where protocols have no equivalent:
 - **Provider-specific params.** Params the IR doesn't model are dropped on
   cross-protocol requests (they'd be rejected by the target API). Same-protocol
   requests keep everything via the fast path.
-- **Responses statefulness.** `previous_response_id`, server-side conversation
-  state, and prompt caching have no portable equivalent and are dropped
-  cross-protocol (cost/latency degrades, correctness does not).
+- **Responses statefulness.** `previous_response_id` and server-side
+  conversation state have no portable equivalent and are dropped cross-protocol
+  (cost/latency degrades, correctness does not).
+- **Prompt caching.** Anthropic `cache_control` breakpoints are carried through
+  the IR (`CacheMarkers` on the request). Rendering back to Anthropic re-emits
+  them on the tools/system/message tail; rendering to OpenAI or Gemini drops the
+  marker because their prefix/implicit caching is automatic (no wire markup).
+  Response usage is normalized across providers: the IR `Usage.input_tokens` is
+  the inclusive total, with `cache_read_input_tokens` / `cache_creation_input_tokens`
+  carried separately and echoed back in each protocol's native shape
+  (`prompt_tokens_details.cached_tokens`, `input_tokens_details.cached_tokens`,
+  `cachedContentTokenCount`). When `general_settings.prompt_caching.auto_inject`
+  is on, the gateway injects breakpoints for clients that can't express them
+  (OpenAI/Gemini → Anthropic). Anthropic→Anthropic keeps everything via the fast
+  path. Explicit Gemini `CachedContent` (a stateful resource) is out of scope.
+- **Response cache.** An optional exact-match cache
+  (`general_settings.cache`, off by default) returns a byte-identical request's
+  stored response without calling the upstream (0 tokens). It keys on the
+  canonical request body plus the deployment and a hash of the caller's API key
+  (so tenants never share entries), honours `Cache-Control: no-cache` /
+  `no-store`, skips `temperature > 0` unless opted in, and buffers+replays SSE.
+  Backends: in-memory (`moka`), `redb` (an embedded pure-Rust store at
+  `cache.redb_path` — persistent across restarts, no daemon; TTL is enforced
+  exactly on read — expired entries are never served — while disk reclamation and
+  the `max_entries` cap are lazy, applied by a background sweep), or Redis
+  (`--features redis-cache`). Hits carry an `x-litellm-cache: hit` header.
+  Per-request opt-outs are read from `Cache-Control` / `x-no-cache` headers and,
+  for litellm parity, from the request body `cache: { "no-cache": …, "no-store":
+  … }` param. `temperature > 0` requests are skipped by default — the *opposite*
+  of upstream litellm, which caches them; set `cache_non_deterministic: true` for
+  upstream-parity hit rates.
+  *Migrating from upstream litellm:* a `litellm_settings: { cache: true,
+  cache_params: {…} }` block is translated onto `general_settings.cache`
+  automatically — `type` → `backend` (`local`→`memory`; `disk`→`redb`, with
+  `disk_cache_dir`→`redb_path`; `redis`→`redis`, with `host`/`port`/`username`/
+  `password` folded into a synthesized `redis_url`, `ssl: true` selecting
+  `rediss://`, and — when no host is given — a `REDIS_URL` env var; an unset
+  `type` defaults to `redis`, as upstream does) and `ttl` → `ttl_secs`. Only the
+  cache stanza of `litellm_settings` is read; other keys (callbacks, fallbacks,
+  `router_settings`, …) are ignored. Unsupported cache keys are logged once and
+  ignored: the `s3`/`redis-semantic`/`qdrant-semantic`/`gcs`/`azure-blob` types,
+  plus `namespace`, `mode`, `default_in_memory_ttl`/`default_in_redis_ttl`,
+  `supported_call_types`, and `similarity_threshold` — note that ignoring `mode:
+  default_off` turns an upstream per-request-opt-in cache into an always-on one.
+  With no `ttl` set, upstream `type: disk` never expires whereas `redb` applies
+  `ttl_secs` (default 300); an explicit `ttl` maps faithfully to both.
+- **Semantic cache.** An optional embedding-based near-match cache
+  (`general_settings.cache.semantic`, `--features semantic-cache`, off by
+  default). Embeds the request, does in-process cosine similarity over a bounded
+  per-tenant LRU, and reuses a response above the threshold (`x-litellm-cache:
+  semantic`). Restricted to deterministic, tool-free, non-streaming requests and
+  fails open. ⚠️ Not recommended for coding-agent workloads (low hit rate,
+  wrong-answer risk); keep it opt-in with a high threshold.
 - **Gemini tool ids.** Gemini function calls have no id; tool results are keyed
   back to calls by function name.
 - **Turn alternation.** Anthropic and Gemini require user/assistant turns to

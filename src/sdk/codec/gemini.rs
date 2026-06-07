@@ -15,9 +15,9 @@ use crate::{
     sdk::{
         codec::{
             ir::{
-                BlockStart, ChatRequest, ChatResponse, ContentBlock, ImageSource, Message,
-                ReasoningConfig, ResponseFormat, Role, StopReason, StreamEvent, ToolChoice,
-                ToolDef, Usage,
+                BlockStart, CacheMarkers, ChatRequest, ChatResponse, ContentBlock, ImageSource,
+                Message, ReasoningConfig, ResponseFormat, Role, StopReason, StreamEvent,
+                ToolChoice, ToolDef, Usage,
             },
             stream::{sse_frame, SseEvent, StreamParser, StreamRenderer},
             ProtocolCodec, RequestCtx,
@@ -122,6 +122,8 @@ impl ProtocolCodec for GeminiCodec {
             system,
             messages,
             tools,
+            // Gemini implicit caching is automatic; nothing to carry from the wire.
+            cache: CacheMarkers::default(),
             tool_choice,
             parallel_tool_calls: None,
             response_format,
@@ -279,11 +281,7 @@ impl ProtocolCodec for GeminiCodec {
                 "finishReason": finish,
                 "index": 0,
             }],
-            "usageMetadata": {
-                "promptTokenCount": resp.usage.input_tokens,
-                "candidatesTokenCount": resp.usage.output_tokens,
-                "totalTokenCount": resp.usage.input_tokens + resp.usage.output_tokens,
-            },
+            "usageMetadata": gemini_usage(&resp.usage),
         }))
     }
 
@@ -605,6 +603,10 @@ fn usage_from_gemini(v: Option<&Value>) -> Usage {
     let Some(obj) = v.and_then(Value::as_object) else {
         return Usage::default();
     };
+    // Gemini's `promptTokenCount` is already inclusive of cached tokens.
+    let cached = field(obj, "cachedContentTokenCount", "cached_content_token_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     Usage {
         input_tokens: field(obj, "promptTokenCount", "prompt_token_count")
             .and_then(Value::as_u64)
@@ -612,7 +614,23 @@ fn usage_from_gemini(v: Option<&Value>) -> Usage {
         output_tokens: field(obj, "candidatesTokenCount", "candidates_token_count")
             .and_then(Value::as_u64)
             .unwrap_or(0),
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: cached,
     }
+}
+
+/// Build a Gemini `usageMetadata` object, adding `cachedContentTokenCount` only
+/// on a cache hit (keeps zero-cache output byte-identical).
+fn gemini_usage(u: &Usage) -> Value {
+    let mut usage = json!({
+        "promptTokenCount": u.input_tokens,
+        "candidatesTokenCount": u.output_tokens,
+        "totalTokenCount": u.input_tokens + u.output_tokens,
+    });
+    if u.cache_read_input_tokens > 0 {
+        usage["cachedContentTokenCount"] = json!(u.cache_read_input_tokens);
+    }
+    usage
 }
 
 // ---- streaming ------------------------------------------------------------
@@ -800,11 +818,7 @@ impl GeminiStreamRenderer {
         }
         let mut data = json!({"candidates": [candidate]});
         if let Some(u) = usage {
-            data["usageMetadata"] = json!({
-                "promptTokenCount": u.input_tokens,
-                "candidatesTokenCount": u.output_tokens,
-                "totalTokenCount": u.input_tokens + u.output_tokens,
-            });
+            data["usageMetadata"] = gemini_usage(u);
         }
         sse_frame(None, &data.to_string())
     }

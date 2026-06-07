@@ -7,6 +7,7 @@
 //! codec, so N protocols need N codecs rather than N×N translators.
 
 pub mod anthropic;
+pub mod cache_inject;
 pub mod gemini;
 pub mod ir;
 pub mod openai_chat;
