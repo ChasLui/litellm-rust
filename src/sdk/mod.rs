@@ -3,5 +3,6 @@
 //! ship standalone.
 
 pub mod codec;
+pub mod complexity;
 pub mod providers;
 pub mod router;

@@ -4,6 +4,7 @@ use serde::Deserialize;
 
 use crate::agents::config::{AgentDefinition, E2bSandboxParams};
 use crate::proxy::config::cache::CacheSettings;
+use crate::proxy::config::complexity::ComplexityRoutingConfig;
 use crate::proxy::config::prompt_caching::PromptCachingSettings;
 use crate::proxy::mcp_config::McpServerEntry;
 
@@ -43,6 +44,7 @@ pub struct ModelEntry {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LiteLlmParams {
+    #[serde(default)]
     pub model: String,
     pub api_key: Option<String>,
     pub api_base: Option<String>,
@@ -50,6 +52,8 @@ pub struct LiteLlmParams {
     /// `gemini` | `anthropic`. When absent, the provider id's default is used.
     #[serde(default)]
     pub wire_api: Option<String>,
+    #[serde(default)]
+    pub complexity_routing: Option<ComplexityRoutingConfig>,
 
     #[serde(flatten)]
     pub extra: HashMap<String, serde_yaml::Value>,

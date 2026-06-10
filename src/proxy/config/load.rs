@@ -136,6 +136,10 @@ fn validate_model_entries(
             ));
         }
 
+        if entry.litellm_params.complexity_routing.is_some() {
+            continue;
+        }
+
         if !entry.litellm_params.model.contains('/') {
             return Err(GatewayError::InvalidConfig(format!(
                 "model must include provider prefix (e.g. anthropic/...), got {}",

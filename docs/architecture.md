@@ -78,6 +78,13 @@ api_key:        "sk-ant-..."
 
 This is what separates the public alias from the real upstream call.
 
+`litellm_params.complexity_routing` declares a routing alias instead of a real
+deployment. The alias is skipped by the normal route table, validated at boot
+against concrete `model_list` entries, then resolved in the request pipeline
+before `sdk/router.rs` looks up the selected public model name. The v0 scorer is
+a zero-dependency heuristic over the already-parsed request body, so routing
+does not re-parse JSON or touch streaming bytes.
+
 ## Config-defined agents
 
 `config.yaml` can also define agents under `agents`, with sandbox selection and

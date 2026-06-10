@@ -77,6 +77,7 @@ fn test_config() -> GatewayConfig {
                 api_key: Some("sk-ant-test".to_owned()),
                 api_base: Some("http://127.0.0.1:1".to_owned()),
                 wire_api: None,
+                complexity_routing: None,
                 extra: Default::default(),
             },
         }],
