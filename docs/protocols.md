@@ -57,6 +57,14 @@ See `config.yaml.example` for ready-to-copy entries.
 The Gemini endpoint accepts the gateway key via `x-goog-api-key`, `?key=`, or a
 bearer token, matching the Gemini SDKs.
 
+Automatic complexity routing can sit in front of any inbound protocol. A
+`model_list` entry with `litellm_params.complexity_routing` is a public alias:
+the gateway scores the already-parsed request body, chooses a configured tier's
+public model name, then continues through normal model resolution and protocol
+translation. The heuristic reads provider-generic shape signals such as prompt
+size, turn count, tools/functions, code-like text, reasoning keywords, and the
+longest message.
+
 ## Advanced feature mapping
 
 Beyond text and function calling, these features map across protocols. Each is

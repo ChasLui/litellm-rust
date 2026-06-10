@@ -11,13 +11,14 @@ use crate::{
         cache::{semantic::SemanticCache, ResponseCache},
         config::GatewayConfig,
     },
-    sdk::router::Router,
+    sdk::{complexity::ComplexityRouter, router::Router},
 };
 
 #[derive(Debug)]
 pub struct AppState {
     pub config: GatewayConfig,
     pub router: Router,
+    pub complexity_router: ComplexityRouter,
     pub mcp_servers: McpServerRegistry,
     pub http: Client,
     pub model_cost_map: ModelCostMap,
@@ -45,6 +46,7 @@ impl AppState {
         model_cost_map: ModelCostMap,
         db: Option<PgPool>,
     ) -> Result<Self, GatewayError> {
+        let complexity_router = ComplexityRouter::from_config(&config)?;
         Ok(Self {
             mcp_servers: McpServerRegistry::from_config(&config)?,
             cache: ResponseCache::from_config(&config.general_settings.cache)?,
@@ -52,6 +54,7 @@ impl AppState {
                 &config.general_settings.cache.semantic,
                 http.clone(),
             ),
+            complexity_router,
             config,
             router,
             http,

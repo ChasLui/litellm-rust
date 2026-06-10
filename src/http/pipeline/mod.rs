@@ -35,8 +35,6 @@ struct CachePlan {
     pub(super) scope_str: String,
 }
 
-/// Outcome of cache planning: either an early cache-hit response, or the plan
-/// describing what to store after the live call.
 enum CacheOutcome {
     Hit(Response),
     Plan(CachePlan),
@@ -53,6 +51,7 @@ pub async fn handle(
     mut body: Value,
     inbound_headers: &HeaderMap,
 ) -> Result<Response, GatewayError> {
+    let model = state.complexity_router.select(inbound_wire, model, &body);
     let route =
         credential_overrides::apply(state, state.router.resolve_wire(inbound_wire, &model)?)
             .await?;

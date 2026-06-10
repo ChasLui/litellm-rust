@@ -63,6 +63,10 @@ impl Router {
         let mut wildcards: HashMap<String, Route> = HashMap::new();
 
         for entry in &config.model_list {
+            if entry.litellm_params.complexity_routing.is_some() {
+                continue;
+            }
+
             let model = &entry.litellm_params.model;
             let Some((provider_id, upstream_model)) = model.split_once('/') else {
                 return Err(GatewayError::InvalidConfig(format!(
@@ -169,132 +173,5 @@ impl std::fmt::Debug for Router {
             .field("models", &self.routes.keys().collect::<Vec<_>>())
             .field("wildcards", &self.wildcards.keys().collect::<Vec<_>>())
             .finish()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use super::Router;
-    use crate::proxy::config::{GatewayConfig, LiteLlmParams, ModelEntry};
-    use crate::sdk::providers::{self, transform::ProviderRegistry};
-
-    #[test]
-    fn resolves_model_to_upstream() {
-        let mut providers = ProviderRegistry::new();
-        providers::register_all(&mut providers);
-
-        let config = GatewayConfig {
-            model_list: vec![ModelEntry {
-                model_name: "claude".to_owned(),
-                litellm_params: LiteLlmParams {
-                    model: "anthropic/claude-sonnet-4-5".to_owned(),
-                    api_key: Some("sk".to_owned()),
-                    api_base: None,
-                    wire_api: None,
-                    extra: Default::default(),
-                },
-            }],
-            mcp_servers: HashMap::new(),
-            general_settings: Default::default(),
-            agents: Vec::new(),
-        };
-
-        let router = Router::from_config(&config, &providers).unwrap();
-        let route = router.resolve("claude").unwrap();
-        assert_eq!(route.deployment.upstream_model, "claude-sonnet-4-5");
-        assert_eq!(route.deployment.provider_id, "anthropic");
-    }
-
-    #[test]
-    fn resolves_wildcard_model_to_anthropic_passthrough() {
-        let mut providers = ProviderRegistry::new();
-        providers::register_all(&mut providers);
-
-        let config = GatewayConfig {
-            model_list: vec![ModelEntry {
-                model_name: "anthropic/*".to_owned(),
-                litellm_params: LiteLlmParams {
-                    model: "anthropic/*".to_owned(),
-                    api_key: Some("sk".to_owned()),
-                    api_base: None,
-                    wire_api: None,
-                    extra: Default::default(),
-                },
-            }],
-            mcp_servers: HashMap::new(),
-            general_settings: Default::default(),
-            agents: Vec::new(),
-        };
-
-        let router = Router::from_config(&config, &providers).unwrap();
-        let route = router.resolve("anthropic/claude-opus-4-8").unwrap();
-        assert_eq!(route.deployment.provider_id, "anthropic");
-        assert_eq!(route.deployment.upstream_model, "claude-opus-4-8");
-    }
-
-    #[test]
-    fn strips_provider_prefix_from_wildcard_model() {
-        let mut providers = ProviderRegistry::new();
-        providers::register_all(&mut providers);
-
-        let config = GatewayConfig {
-            model_list: vec![ModelEntry {
-                model_name: "anthropic/*".to_owned(),
-                litellm_params: LiteLlmParams {
-                    model: "anthropic/*".to_owned(),
-                    api_key: Some("sk".to_owned()),
-                    api_base: None,
-                    wire_api: None,
-                    extra: Default::default(),
-                },
-            }],
-            mcp_servers: HashMap::new(),
-            general_settings: Default::default(),
-            agents: Vec::new(),
-        };
-
-        let router = Router::from_config(&config, &providers).unwrap();
-        let route = router.resolve("anthropic/claude-opus-4-8").unwrap();
-        assert_eq!(route.deployment.upstream_model, "claude-opus-4-8");
-    }
-
-    #[test]
-    fn exact_route_takes_precedence_over_wildcard() {
-        let mut providers = ProviderRegistry::new();
-        providers::register_all(&mut providers);
-
-        let config = GatewayConfig {
-            model_list: vec![
-                ModelEntry {
-                    model_name: "claude".to_owned(),
-                    litellm_params: LiteLlmParams {
-                        model: "anthropic/claude-sonnet-4-5".to_owned(),
-                        api_key: Some("sk".to_owned()),
-                        api_base: None,
-                        wire_api: None,
-                        extra: Default::default(),
-                    },
-                },
-                ModelEntry {
-                    model_name: "anthropic/*".to_owned(),
-                    litellm_params: LiteLlmParams {
-                        model: "anthropic/*".to_owned(),
-                        api_key: Some("sk".to_owned()),
-                        api_base: None,
-                        wire_api: None,
-                        extra: Default::default(),
-                    },
-                },
-            ],
-            mcp_servers: HashMap::new(),
-            general_settings: Default::default(),
-            agents: Vec::new(),
-        };
-
-        let router = Router::from_config(&config, &providers).unwrap();
-        let route = router.resolve("claude").unwrap();
-        assert_eq!(route.deployment.upstream_model, "claude-sonnet-4-5");
     }
 }

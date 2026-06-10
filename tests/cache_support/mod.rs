@@ -51,6 +51,7 @@ pub fn cache_config_with(
                 api_key: Some("sk-ant-test".to_owned()),
                 api_base: Some(api_base),
                 wire_api: None,
+                complexity_routing: None,
                 extra: Default::default(),
             },
         }],

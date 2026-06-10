@@ -29,6 +29,20 @@ model_list:
   #       model: openai/gpt-4o
   #       wire_api: chat
 
+  # Automatic complexity routing: a public alias chooses a concrete model by a
+  # cheap request-shape heuristic before normal route resolution.
+  #
+  #   - model_name: auto
+  #     litellm_params:
+  #       complexity_routing:
+  #         scorer: heuristic
+  #         tiers:
+  #           - max_score: 0.3
+  #             model: claude-haiku
+  #           - max_score: 0.7
+  #             model: claude-sonnet
+  #           - model: claude-opus
+
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   database_url: os.environ/DATABASE_URL
