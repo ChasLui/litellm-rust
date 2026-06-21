@@ -67,7 +67,7 @@ pub async fn generate(
 /// for cache scoping (the accepted `x-goog-api-key` or `?key=`, which `presented_key`
 /// would otherwise mis-prioritise). Returns `None` when auth is off or a standard
 /// gateway header authenticated (which `presented_key` already reads correctly).
-fn authorize(
+pub(crate) fn authorize(
     state: &AppState,
     headers: &HeaderMap,
     query_key: Option<&str>,

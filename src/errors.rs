@@ -62,6 +62,9 @@ pub enum GatewayError {
     #[error("upstream request failed: {0}")]
     Upstream(reqwest::Error),
 
+    #[error("websocket error: {0}")]
+    WebSocket(String),
+
     #[error("sandbox request failed: {0}")]
     Sandbox(reqwest::Error),
 
@@ -89,7 +92,9 @@ impl GatewayError {
             | Self::UnknownAgentRun(_)
             | Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::Upstream(_) | Self::Sandbox(_) | Self::SandboxError(_) => StatusCode::BAD_GATEWAY,
+            Self::Upstream(_) | Self::WebSocket(_) | Self::Sandbox(_) | Self::SandboxError(_) => {
+                StatusCode::BAD_GATEWAY
+            }
         }
     }
 }

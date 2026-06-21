@@ -1,9 +1,8 @@
-//! Request pipeline: translate inbound → IR → outbound, send upstream, then
-//! translate the response back. When inbound and outbound wire formats match,
-//! the body is passed through untouched (fast path), preserving low overhead.
+//! Request pipeline: translate inbound → IR → outbound, with a same-wire fast path.
 
 mod cache;
 mod dispatch;
+mod prepare;
 mod respond;
 mod transform;
 
@@ -24,6 +23,7 @@ use crate::{
 };
 
 use cache::replay_cached;
+pub use prepare::{prepare_upstream, websocket_response_context, PreparedUpstreamRequest};
 
 /// Cache decisions resolved up front: what (if anything) to store after the call.
 struct CachePlan {

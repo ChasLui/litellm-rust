@@ -16,7 +16,7 @@ use crate::{
         models::models,
         openapi::{openapi_json, swagger_ui},
         responses::responses,
-        ui,
+        ui, websocket,
     },
     mcp::route::{streamable_http, streamable_http_server},
     proxy::state::AppState,
@@ -39,10 +39,16 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(crate::http::provider_credentials::save_provider)
                 .delete(crate::http::provider_credentials::delete_provider),
         )
-        .route("/v1/messages", post(messages))
-        .route("/v1/responses", post(responses))
-        .route("/v1/chat/completions", post(chat_completions))
-        .route("/v1beta/models/{model_method}", post(gemini::generate))
+        .route("/v1/messages", get(websocket::messages).post(messages))
+        .route("/v1/responses", get(websocket::responses).post(responses))
+        .route(
+            "/v1/chat/completions",
+            get(websocket::chat_completions).post(chat_completions),
+        )
+        .route(
+            "/v1beta/models/{model_method}",
+            get(websocket::gemini).post(gemini::generate),
+        )
         .route("/v1/models", get(models))
         .merge(crate::http::management::routes::router())
         .merge(crate::http::managed_agents::routes::router())
