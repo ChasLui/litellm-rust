@@ -83,15 +83,18 @@ async fn handle_text_event(
         .and_then(WireFormat::parse)
         .unwrap_or(default_wire);
     let mut body = request_body(event)?;
-    if let Some(model) = model_from_path {
+    let model = match model_from_path {
+        Some(model) => model.to_owned(),
+        None => body
+            .get("model")
+            .and_then(Value::as_str)
+            .ok_or(GatewayError::MissingModel)?
+            .to_owned(),
+    };
+    if inbound_wire != WireFormat::Gemini {
         body["model"] = json!(model);
+        body["stream"] = json!(true);
     }
-    let model = body
-        .get("model")
-        .and_then(Value::as_str)
-        .ok_or(GatewayError::MissingModel)?
-        .to_owned();
-    body["stream"] = json!(true);
 
     let prepared =
         pipeline::prepare_upstream(state, inbound_wire, model, true, body, headers).await?;

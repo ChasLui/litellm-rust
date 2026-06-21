@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use axum::extract::ws::{Message, WebSocket};
+use axum::{
+    extract::ws::{Message, WebSocket},
+    http::{header, HeaderMap},
+};
 use futures_util::StreamExt;
 use serde_json::json;
 
@@ -32,6 +35,13 @@ pub async fn proxy_upstream(
         let bytes = upstream.bytes().await.map_err(GatewayError::Upstream)?;
         return Err(GatewayError::WebSocket(format!(
             "upstream returned {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        )));
+    }
+    if !is_event_stream(upstream.headers()) {
+        let bytes = upstream.bytes().await.map_err(GatewayError::Upstream)?;
+        return Err(GatewayError::WebSocket(format!(
+            "upstream returned non-SSE response: {}",
             String::from_utf8_lossy(&bytes)
         )));
     }
@@ -87,4 +97,11 @@ async fn send_sse_event(socket: &mut WebSocket, data: String) -> Result<(), Gate
         .send(Message::Text(data.into()))
         .await
         .map_err(|err| GatewayError::WebSocket(err.to_string()))
+}
+
+fn is_event_stream(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.to_ascii_lowercase().contains("text/event-stream"))
 }

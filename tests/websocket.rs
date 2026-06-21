@@ -92,6 +92,7 @@ async fn websocket_roundtrip(
             Some("response.completed")
                 | Some("message_stop")
                 | Some("done")
+                | Some("error")
                 | Some("response.failed")
                 | Some("response.incomplete")
         ) || event
@@ -108,6 +109,10 @@ async fn websocket_roundtrip(
     socket.close(None).await.unwrap();
     let last = events.last().cloned().unwrap();
     (events, last)
+}
+
+async fn websocket_event(addr: SocketAddr, endpoint: &str, event: Value) -> Value {
+    websocket_roundtrip(addr, endpoint, event).await.1
 }
 
 async fn mount_responses_sse(upstream: &MockServer) {
@@ -223,3 +228,64 @@ async fn websocket_accepts_gemini_protocol() {
     let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
     assert_eq!(body["input"][0]["content"][0]["text"], "hi");
 }
+
+#[tokio::test]
+async fn gemini_path_websocket_keeps_model_and_stream_out_of_body() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-2.5-pro:streamGenerateContent"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(GEMINI_TEXT_SSE.as_bytes(), "text/event-stream"),
+        )
+        .mount(&upstream)
+        .await;
+    let state = build_state(vec![model_entry("gemini/*", "gemini/*", &upstream.uri())]);
+    let addr = serve(state).await;
+
+    let last = websocket_event(
+        addr,
+        "/v1beta/models/gemini-2.5-pro:streamGenerateContent",
+        json!({
+            "type": "response.create",
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}]
+        }),
+    )
+    .await;
+
+    assert_eq!(last["candidates"][0]["finishReason"], "STOP");
+    let reqs = upstream.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert!(body.get("model").is_none(), "sent: {body}");
+    assert!(body.get("stream").is_none(), "sent: {body}");
+}
+
+#[tokio::test]
+async fn websocket_reports_non_sse_upstream_body() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"error": "not sse"})))
+        .mount(&upstream)
+        .await;
+    let state = build_state(vec![model_entry("gw", "openai/gpt-5", &upstream.uri())]);
+    let addr = serve(state).await;
+
+    let last = websocket_event(
+        addr,
+        "/v1/responses",
+        json!({"type": "response.create", "model": "gw", "input": "hi"}),
+    )
+    .await;
+
+    assert_eq!(last["type"], "error");
+    assert!(last["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("non-SSE"));
+}
+
+const GEMINI_TEXT_SSE: &str = concat!(
+    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hello\"}]},\"index\":0}]}\n\n",
+    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"STOP\",\"index\":0}]}\n\n",
+);
