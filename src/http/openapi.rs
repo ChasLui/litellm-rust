@@ -48,6 +48,8 @@ fn openapi_spec(models: &[Value], model_enum_desc: &str) -> Value {
         "paths": {
             "/health": health_path(),
             "/v1/models": models_path(),
+            "/v1/messages/models": anthropic_models_path(),
+            "/v1beta/models": gemini_models_path(),
             "/api/capabilities": capabilities_path(),
             "/api/keys": keys_path(),
             "/api/keys/{id}": key_path(),
@@ -66,6 +68,36 @@ fn models_path() -> Value {
             "security": [{ "BearerAuth": [] }],
             "responses": {
                 "200": { "description": "OpenAI-compatible model list" },
+                "401": { "description": "Invalid or missing gateway key" }
+            }
+        }
+    })
+}
+
+fn anthropic_models_path() -> Value {
+    json!({
+        "get": {
+            "summary": "List configured model aliases in Anthropic model-list shape",
+            "operationId": "listAnthropicModels",
+            "tags": ["Models"],
+            "security": [{ "BearerAuth": [] }],
+            "responses": {
+                "200": { "description": "Anthropic-compatible model list" },
+                "401": { "description": "Invalid or missing gateway key" }
+            }
+        }
+    })
+}
+
+fn gemini_models_path() -> Value {
+    json!({
+        "get": {
+            "summary": "List configured model aliases in Gemini model-list shape",
+            "operationId": "listGeminiModels",
+            "tags": ["Models"],
+            "security": [{ "BearerAuth": [] }],
+            "responses": {
+                "200": { "description": "Gemini-compatible model list" },
                 "401": { "description": "Invalid or missing gateway key" }
             }
         }

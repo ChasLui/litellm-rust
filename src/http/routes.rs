@@ -13,7 +13,7 @@ use crate::{
         gemini,
         health::health,
         messages::messages,
-        models::models,
+        models::{anthropic_models, gemini_models, models},
         openapi::{openapi_json, swagger_ui},
         responses::responses,
         ui, websocket,
@@ -50,6 +50,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(websocket::gemini).post(gemini::generate),
         )
         .route("/v1/models", get(models))
+        .route("/v1beta/models", get(gemini_models))
+        .route("/v1/messages/models", get(anthropic_models))
         .merge(crate::http::management::routes::router())
         .merge(crate::http::managed_agents::routes::router())
         .route(
