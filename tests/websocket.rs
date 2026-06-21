@@ -33,6 +33,7 @@ fn model_entry(model_name: &str, model: &str, api_base: &str) -> ModelEntry {
             api_key: Some("sk-upstream".to_owned()),
             api_base: Some(api_base.to_owned()),
             wire_api: None,
+            complexity_routing: None,
             extra: Default::default(),
         },
     }
