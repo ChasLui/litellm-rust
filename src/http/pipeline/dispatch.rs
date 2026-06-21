@@ -18,8 +18,7 @@ use crate::{
 
 use super::cache::{content_type_of, store_response, tee_and_store};
 use super::respond::{
-    error_or_passthrough, has_error_object, is_event_stream, is_failed_responses, rewrite_model,
-    translated_error,
+    error_or_passthrough, has_error_object, is_event_stream, is_failed_responses, translated_error,
 };
 use super::transform::transform_stream;
 use super::CachePlan;
@@ -37,7 +36,7 @@ pub(super) async fn run_fast_path(
     plan: &CachePlan,
 ) -> Result<Response, GatewayError> {
     let out_codec = codec_for(deployment.wire);
-    rewrite_model(&mut body, deployment);
+    rewrite_for_fast_path(&mut body, deployment);
     let headers = out_codec.outbound_headers(deployment, inbound_headers)?;
     let upstream = llm::send_request(&state.http, url, serde_json::to_vec(&body)?, headers).await?;
     let status = upstream.status();
@@ -139,7 +138,7 @@ pub(super) async fn run_cross_protocol(
     let mut ir_req = in_codec.parse_request(body)?;
     ir_req.model = deployment.upstream_model.clone();
     ir_req.stream = stream;
-    maybe_inject_breakpoints(state, out_wire, &mut ir_req);
+    inject_request_breakpoints(state, out_wire, &mut ir_req);
     let out_body = out_codec.render_request(&ir_req)?;
     let headers = out_codec.outbound_headers(deployment, inbound_headers)?;
     let upstream =
@@ -192,7 +191,11 @@ pub(super) async fn run_cross_protocol(
 
 /// Auto-inject Anthropic cache breakpoints for clients that can't express them,
 /// when routed to an Anthropic upstream and the operator opted in.
-fn maybe_inject_breakpoints(
+pub(super) fn rewrite_for_fast_path(body: &mut Value, deployment: &crate::sdk::router::Deployment) {
+    super::respond::rewrite_model(body, deployment);
+}
+
+pub(super) fn inject_request_breakpoints(
     state: &Arc<AppState>,
     out_wire: WireFormat,
     ir_req: &mut crate::sdk::codec::ir::ChatRequest,

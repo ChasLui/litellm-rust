@@ -6,10 +6,10 @@ pair — including tool calling and streaming.
 
 | Wire format | Inbound endpoint | Outbound URL | Tool calling |
 |---|---|---|---|
-| Anthropic Messages | `POST /v1/messages` | `{base}/v1/messages` | `tool_use` / `tool_result` blocks |
-| OpenAI Chat Completions | `POST /v1/chat/completions` | `{base}/v1/chat/completions` | `tool_calls` / `role:tool` |
-| OpenAI Responses | `POST /v1/responses` | `{base}/v1/responses` | `function_call` / `function_call_output` |
-| Gemini | `POST /v1beta/models/{model}:generateContent` (`:streamGenerateContent`) | `{base}/v1beta/models/{model}:…` | `functionCall` / `functionResponse` parts |
+| Anthropic Messages | `POST` or WebSocket `GET /v1/messages` | `{base}/v1/messages` | `tool_use` / `tool_result` blocks |
+| OpenAI Chat Completions | `POST` or WebSocket `GET /v1/chat/completions` | `{base}/v1/chat/completions` | `tool_calls` / `role:tool` |
+| OpenAI Responses | `POST` or WebSocket `GET /v1/responses` | `{base}/v1/responses` | `function_call` / `function_call_output` |
+| Gemini | `POST` or WebSocket `GET /v1beta/models/{model}:generateContent` (`:streamGenerateContent`) | `{base}/v1beta/models/{model}:…` | `functionCall` / `functionResponse` parts |
 
 ## How it works
 
@@ -29,6 +29,13 @@ upstream resp --[out codec].parse_response--> IR --[in codec].render_response-->
 Streaming works the same way per SSE event: the outbound codec's stream parser
 turns the upstream SSE into canonical `StreamEvent`s, and the inbound codec's
 stream renderer turns those back into the client protocol's SSE.
+
+WebSocket mode accepts JSON `response.create` messages. The request body can be
+sent directly as top-level fields (Codex/OpenAI Responses style) or under
+`response` / `request`; optional `protocol` / `wire_api` selects one of the four
+inbound protocols (`responses`, `chat`, `anthropic`, `gemini`). Each upstream SSE
+event is returned as one WebSocket text JSON message in the selected inbound
+protocol shape.
 
 **Fast path.** When the inbound and outbound protocols match (e.g. a Claude
 client to an Anthropic upstream), the body is passed through byte-for-byte — only

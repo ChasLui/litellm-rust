@@ -36,9 +36,9 @@ lite codex
 
 The first run prompts for your LiteLLM URL and API key, saves them to
 `~/.config/lite/codex.env`, and starts Codex pointed at the gateway. Codex uses
-the OpenAI **Responses API** (SSE over HTTP — no WebSocket), so requests land on
-`POST /v1/responses`. The wizard injects the gateway via `-c` config overrides
-and never edits your `~/.codex/config.toml`:
+the OpenAI **Responses API**, so requests land on `POST /v1/responses` for HTTP
+or upgrade through `GET /v1/responses` for WebSocket mode. The wizard injects
+the gateway via `-c` config overrides and never edits your `~/.codex/config.toml`:
 
 ```bash
 codex \

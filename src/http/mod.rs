@@ -15,3 +15,4 @@ pub mod provider_credentials;
 pub mod responses;
 pub mod routes;
 pub mod ui;
+pub mod websocket;
