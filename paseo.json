@@ -1,0 +1,18 @@
+{
+  "worktree": {
+    "setup": "git config core.hooksPath .githooks\n[ -f \"$PASEO_SOURCE_CHECKOUT_PATH/config.yaml\" ] && cp \"$PASEO_SOURCE_CHECKOUT_PATH/config.yaml\" config.yaml || true\n[ -f \"$PASEO_SOURCE_CHECKOUT_PATH/.env\" ] && cp \"$PASEO_SOURCE_CHECKOUT_PATH/.env\" .env || true\nmkdir -p .serena .claude/skills\n[ -d \"$PASEO_SOURCE_CHECKOUT_PATH/.serena/memories\" ] && ln -sfn \"$PASEO_SOURCE_CHECKOUT_PATH/.serena/memories\" .serena/memories || true\n[ -f \"$PASEO_SOURCE_CHECKOUT_PATH/.serena/project.yml\" ] && ln -sfn \"$PASEO_SOURCE_CHECKOUT_PATH/.serena/project.yml\" .serena/project.yml || true\n[ -d \"$PASEO_SOURCE_CHECKOUT_PATH/.claude/skills/gitnexus\" ] && ln -sfn \"$PASEO_SOURCE_CHECKOUT_PATH/.claude/skills/gitnexus\" .claude/skills/gitnexus || true\ncargo fetch --locked",
+    "teardown": "sh -lc 'name=$(echo \"$PASEO_WORKTREE_PATH\" | sed \"s|^/||; s|/|-|g\"); codebase-memory-mcp cli delete_project --project \"$name\" >/dev/null 2>&1; rm -f ~/.cache/codebase-memory-mcp/\"$name\".db*' || true"
+  },
+  "scripts": {
+    "fmt": { "command": "cargo fmt --all --check" },
+    "check": { "command": "cargo check --all-targets --locked" },
+    "lint": { "command": "cargo clippy --all-targets --locked -- -D warnings" },
+    "test": { "command": "cargo test --locked" },
+    "size": { "command": "python3 scripts/check_code_size.py" },
+    "ci": { "command": "cargo fmt --all --check && cargo check --all-targets --locked && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked && python3 scripts/check_code_size.py" },
+    "serve": {
+      "type": "service",
+      "command": "cargo run --bin lite -- serve --host 127.0.0.1 --port $PASEO_PORT --config $([ -f config.yaml ] && echo config.yaml || echo config.yaml.example)"
+    }
+  }
+}
